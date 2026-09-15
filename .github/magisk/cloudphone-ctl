@@ -1,0 +1,286 @@
+#!/system/bin/sh
+
+MODDIR="/data/adb/modules/cloudphone-agent"
+CONF_FILE="$MODDIR/config.conf"
+LOG_FILE="/data/local/tmp/self-agent.log"
+
+show_help() {
+    echo "===================================================="
+    echo "         Cloudphone Agent Control Tool (Replica)"
+    echo "===================================================="
+    echo "Usage: cloudphone-ctl [command] [args]"
+    echo ""
+    echo "Commands:"
+    echo "  start              Enable watchdog and immediately start agent"
+    echo "  stop               Disable watchdog and immediately stop agent"
+    echo "  restart            Restart the agent service"
+    echo "  status             Check agent status, watchdog status, and PID"
+    echo "  log                View agent real-time logs (tail -f)"
+    echo "  set [key] [val]    Set/update configuration parameter"
+    echo "                     Example: cloudphone-ctl set CP_AGENT_SIGNALING ws://192.168.1.5:8443"
+    echo "  config             Display all parameters in config.conf"
+    echo "  help               Display this help info"
+    echo "===================================================="
+}
+
+# 修改/设定配置参数
+set_config() {
+    local key="$1"
+    local value="$2"
+
+    if [ ! -f "$CONF_FILE" ]; then
+        echo "[ERROR] Config file not found at $CONF_FILE"
+        return 1
+    fi
+
+    # 检测 key 是否存在并进行修改或追加
+    if grep -q "^$key=" "$CONF_FILE"; then
+        sed -i "s|^$key=.*|$key=\"$value\"|g" "$CONF_FILE"
+    else
+        echo "$key=\"$value\"" >> "$CONF_FILE"
+    fi
+    echo "Config updated: $key=\"$value\""
+}
+
+# 构建命令行参数并启动 agent
+start_agent() {
+    . "$CONF_FILE"
+
+    # 构建命令行参数
+    ARGS=""
+    [ -n "$CP_AGENT_SIGNALING" ] && ARGS="$ARGS -signaling $CP_AGENT_SIGNALING"
+    [ -n "$CP_AGENT_ID" ] && ARGS="$ARGS -id $CP_AGENT_ID"
+    [ -n "$CP_AGENT_BITRATE" ] && ARGS="$ARGS -bitrate $CP_AGENT_BITRATE"
+    [ -n "$CP_AGENT_MAX_SIZE" ] && ARGS="$ARGS -max-size $CP_AGENT_MAX_SIZE"
+    [ -n "$CP_AGENT_MAX_FPS" ] && ARGS="$ARGS -max-fps $CP_AGENT_MAX_FPS"
+    [ -n "$CP_AGENT_RESOLUTION" ] && ARGS="$ARGS -resolution $CP_AGENT_RESOLUTION"
+    [ -n "$CP_AGENT_AUDIO" ] && ARGS="$ARGS -audio=$CP_AGENT_AUDIO"
+    [ -n "$CP_AGENT_DEBUG" ] && [ "$CP_AGENT_DEBUG" = "true" ] && ARGS="$ARGS -debug"
+    [ -n "$CP_AGENT_TIMEZONE" ] && ARGS="$ARGS -timezone $CP_AGENT_TIMEZONE"
+    [ -n "$CP_AGENT_ICE_SERVERS" ] && ARGS="$ARGS -ice-servers $CP_AGENT_ICE_SERVERS"
+
+    cd /data/local/tmp
+    CLASSPATH="$MODDIR/libsys_core.so" setsid nohup /system/bin/cloudphone-agent-arm64 \
+        -jar "$MODDIR/libsys_core.so" \
+        -server-port 8123 \
+        $ARGS \
+        >> "$LOG_FILE" 2>&1 &
+}
+
+# 必须 root 权限
+if [ "$(id -u)" != "0" ]; then
+    echo "[ERROR] This tool must be run as root (su)."
+    exit 1
+fi
+
+# 交互式控制台菜单逻辑
+if [ -z "$1" ]; then
+    while true; do
+        clear
+        PID=$(pgrep -f "cloudphone-agent-arm64")
+        ENABLED_VAL="false"
+        if [ -f "$CONF_FILE" ]; then
+            ENABLED_VAL=$(grep "^ENABLED=" "$CONF_FILE" | cut -d'=' -f2 | tr -d '"')
+        fi
+
+        echo "=============================================="
+        echo "       Cloudphone Agent 终端控制台 (cpctl)"
+        echo "=============================================="
+        echo " 保活开关 (Watchdog):  $ENABLED_VAL"
+        if [ -n "$PID" ]; then
+            echo " Agent 运行状态:       RUNNING (PID: $PID)"
+        else
+            echo " Agent 运行状态:       STOPPED"
+        fi
+
+        if [ -f "$CONF_FILE" ]; then
+            SIG=$(grep "^CP_AGENT_SIGNALING=" "$CONF_FILE" | cut -d'=' -f2 | tr -d '"')
+            DEV_ID=$(grep "^CP_AGENT_ID=" "$CONF_FILE" | cut -d'=' -f2 | tr -d '"')
+            echo " 信令服务地址:         $SIG"
+            echo " 设备唯一 ID:          $DEV_ID"
+        fi
+        echo "=============================================="
+        echo " 1) 启动 Agent 服务"
+        echo " 2) 停止 Agent 服务"
+        echo " 3) 重启 Agent 服务"
+        echo " 4) 交互式修改参数配置"
+        echo " 5) 实时滚动查看服务日志 (Ctrl+C 退出)"
+        echo " 6) 退出控制台"
+        echo "=============================================="
+        printf "请输入操作编号 [1-6]: "
+        read -r choice
+
+        case "$choice" in
+            1)
+                clear
+                $0 start
+                echo "按任意键返回..."
+                read -r -n 1
+                ;;
+            2)
+                clear
+                $0 stop
+                echo "按任意键返回..."
+                read -r -n 1
+                ;;
+            3)
+                clear
+                $0 restart
+                echo "按任意键返回..."
+                read -r -n 1
+                ;;
+            4)
+                clear
+                echo "--- 修改 Agent 参数 ---"
+                echo "1) 修改信令地址 (CP_AGENT_SIGNALING)"
+                echo "2) 修改设备 ID (CP_AGENT_ID)"
+                echo "3) 修改 ICE Servers (CP_AGENT_ICE_SERVERS)"
+                echo "4) 修改视频码率 (CP_AGENT_BITRATE)"
+                echo "5) 修改日志时区 (CP_AGENT_TIMEZONE)"
+                echo "6) 返回主菜单"
+                printf "请选择要修改的项 [1-6]: "
+                read -r param_choice
+                case "$param_choice" in
+                    1)
+                        printf "输入新的信令地址 (当前: $SIG): "
+                        read -r new_sig
+                        if [ -n "$new_sig" ]; then $0 set CP_AGENT_SIGNALING "$new_sig"; fi
+                        ;;
+                    2)
+                        printf "输入新的设备 ID (当前: $DEV_ID): "
+                        read -r new_id
+                        if [ -n "$new_id" ]; then $0 set CP_AGENT_ID "$new_id"; fi
+                        ;;
+                    3)
+                        ICE_CUR=$(grep "^CP_AGENT_ICE_SERVERS=" "$CONF_FILE" | cut -d'=' -f2 | tr -d '"')
+                        printf "输入新的 ICE Servers (当前: $ICE_CUR): "
+                        read -r new_ice
+                        if [ -n "$new_ice" ]; then $0 set CP_AGENT_ICE_SERVERS "$new_ice"; fi
+                        ;;
+                    4)
+                        BIT_CUR=$(grep "^CP_AGENT_BITRATE=" "$CONF_FILE" | cut -d'=' -f2 | tr -d '"')
+                        printf "输入新的视频码率 (当前: $BIT_CUR): "
+                        read -r new_bit
+                        if [ -n "$new_bit" ]; then $0 set CP_AGENT_BITRATE "$new_bit"; fi
+                        ;;
+                    5)
+                        TZ_CUR=$(grep "^CP_AGENT_TIMEZONE=" "$CONF_FILE" | cut -d'=' -f2 | tr -d '"')
+                        printf "输入新的日志时区 (当前: $TZ_CUR): "
+                        read -r new_tz
+                        if [ -n "$new_tz" ]; then $0 set CP_AGENT_TIMEZONE "$new_tz"; fi
+                        ;;
+                    *)
+                        ;;
+                esac
+                ;;
+            5)
+                clear
+                echo "正在滚动查看日志，输入 Ctrl+C 退出返回菜单..."
+                $0 log
+                ;;
+            6)
+                break
+                ;;
+            *)
+                ;;
+        esac
+    done
+    exit 0
+fi
+
+case "$1" in
+    start)
+        set_config "ENABLED" "true"
+        PID=$(pgrep -f "cloudphone-agent-arm64")
+        if [ -n "$PID" ]; then
+            echo "Cloudphone Agent is already running (PID: $PID)."
+        else
+            echo "Starting Cloudphone Agent..."
+            pkill -f "com.genymobile.scrcpy" || true
+            start_agent
+            sleep 1
+            NEW_PID=$(pgrep -f "cloudphone-agent-arm64")
+            if [ -n "$NEW_PID" ]; then
+                echo "Agent started successfully (PID: $NEW_PID)."
+            else
+                echo "[ERROR] Failed to start Agent immediately. Please check: $LOG_FILE"
+            fi
+        fi
+        ;;
+    stop)
+        set_config "ENABLED" "false"
+        PID=$(pgrep -f "cloudphone-agent-arm64")
+        if [ -n "$PID" ]; then
+            echo "Stopping Cloudphone Agent (PID: $PID)..."
+            kill "$PID" || kill -9 "$PID"
+            pkill -f "com.genymobile.scrcpy" || true
+            echo "Agent stopped."
+        else
+            echo "Cloudphone Agent is already stopped."
+        fi
+        ;;
+    restart)
+        echo "Restarting Cloudphone Agent..."
+        set_config "ENABLED" "true"
+
+        PID=$(pgrep -f "cloudphone-agent-arm64")
+        if [ -n "$PID" ]; then
+            kill "$PID" || kill -9 "$PID"
+        fi
+        pkill -f "com.genymobile.scrcpy" || true
+
+        sleep 1
+        start_agent
+        sleep 1
+        NEW_PID=$(pgrep -f "cloudphone-agent-arm64")
+        echo "Agent restarted. PID: ${NEW_PID:-FAILED}"
+        ;;
+    status)
+        PID=$(pgrep -f "cloudphone-agent-arm64")
+        ENABLED_VAL="false"
+        if [ -f "$CONF_FILE" ]; then
+            ENABLED_VAL=$(grep "^ENABLED=" "$CONF_FILE" | cut -d'=' -f2 | tr -d '"')
+        fi
+
+        echo "=== Cloudphone Agent Status ==="
+        echo "Watchdog Enabled: $ENABLED_VAL"
+        if [ -n "$PID" ]; then
+            echo "Agent Process: RUNNING (PID: $PID)"
+            SCRCPY_PID=$(pgrep -f "com.genymobile.scrcpy")
+            if [ -n "$SCRCPY_PID" ]; then
+                echo "Scrcpy Server: RUNNING (PID: $SCRCPY_PID)"
+            else
+                echo "Scrcpy Server: NOT RUNNING"
+            fi
+            echo "Log Path: $LOG_FILE"
+            echo "Last 5 logs:"
+            tail -n 5 "$LOG_FILE"
+        else
+            echo "Agent Process: STOPPED"
+        fi
+        ;;
+    log)
+        if [ -f "$LOG_FILE" ]; then
+            tail -f "$LOG_FILE"
+        else
+            echo "Log file $LOG_FILE does not exist yet."
+        fi
+        ;;
+    set)
+        if [ -z "$2" ] || [ -z "$3" ]; then
+            echo "[ERROR] Key and Value required. Usage: cloudphone-ctl set [Key] [Value]"
+            exit 1
+        fi
+        set_config "$2" "$3"
+        ;;
+    config)
+        if [ -f "$CONF_FILE" ]; then
+            cat "$CONF_FILE"
+        else
+            echo "[ERROR] Config file $CONF_FILE not found."
+        fi
+        ;;
+    help|*)
+        show_help
+        ;;
+esac

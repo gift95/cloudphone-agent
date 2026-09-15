@@ -1,0 +1,170 @@
+name: Build and Package Agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Create GitHub Release with artifacts'
+        required: true
+        default: 'false'
+      release_tag:
+        description: 'Release tag (e.g., v1.0.1)'
+        required: false
+        default: ''
+  push:
+    branches: [ main ]
+    paths:
+      - 'agent/**'
+      - 'scrcpy-server/**'
+      - '.github/workflows/build-agent.yml'
+      - '.github/magisk/**'
+      - 'deploy/**'
+    tags:
+      - 'v*'
+
+env:
+  GO_VERSION: '1.22'
+  JAVA_VERSION: '17'
+  ANDROID_COMPILE_SDK: '36'
+  ANDROID_BUILD_TOOLS: '36.0.0'
+  OUTPUT_DIR: build
+
+jobs:
+  build-and-package:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: agent/go.sum
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platforms;android-${{ env.ANDROID_COMPILE_SDK }} build-tools;${{ env.ANDROID_BUILD_TOOLS }}"
+
+      # Step 1: 构建 scrcpy-server (libsys_core.so)
+      - name: Build scrcpy-server (libsys_core.so)
+        working-directory: scrcpy-server/android
+        env:
+          ANDROID_PLATFORM: ${{ env.ANDROID_COMPILE_SDK }}
+          ANDROID_BUILD_TOOLS: ${{ env.ANDROID_BUILD_TOOLS }}
+          BUILD_DIR: ${{ github.workspace }}/scrcpy-server/build
+        run: |
+          echo "=== Building scrcpy-server ==="
+          chmod +x build_without_gradle.sh
+          ./build_without_gradle.sh
+          if [ ! -f "$BUILD_DIR/scrcpy-server" ]; then
+            echo "ERROR: scrcpy-server not found!"
+            exit 1
+          fi
+          # 复制到 agent 目录（用于 //go:embed 编译）
+          cp "$BUILD_DIR/scrcpy-server" ${{ github.workspace }}/agent/libsys_core.so
+          # 复制到输出目录
+          mkdir -p ${{ github.workspace }}/${{ env.OUTPUT_DIR }}
+          cp "$BUILD_DIR/scrcpy-server" ${{ github.workspace }}/${{ env.OUTPUT_DIR }}/libsys_core.so
+          echo "✅ scrcpy-server built, libsys_core.so ready for embed"
+
+      # Step 2: 编译 Agent（三个架构）
+      - name: Build Agent (arm64)
+        working-directory: agent
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o ../${{ env.OUTPUT_DIR }}/cloudphone-agent-arm64 .
+          echo "✅ arm64 build complete"
+
+      - name: Build Agent (amd64)
+        working-directory: agent
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o ../${{ env.OUTPUT_DIR }}/cloudphone-agent-amd64 .
+          echo "✅ amd64 build complete"
+
+      - name: Build Agent (armeabi-v7a)
+        working-directory: agent
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -ldflags="-s -w" -o ../${{ env.OUTPUT_DIR }}/cloudphone-agent-armeabi-v7a .
+          echo "✅ armeabi-v7a build complete"
+
+      # Step 3: 打包 agent-deploy.pkg
+      - name: Package agent-deploy.pkg
+        working-directory: ${{ env.OUTPUT_DIR }}
+        run: |
+          zip -j agent-deploy.pkg \
+            cloudphone-agent-arm64 \
+            cloudphone-agent-amd64 \
+            cloudphone-agent-armeabi-v7a \
+            libsys_core.so \
+            ../deploy/run.bat \
+            ../deploy/run.sh
+          echo "✅ agent-deploy.pkg packaged"
+          unzip -l agent-deploy.pkg
+
+      # Step 4: 打包 magisk 模块
+      - name: Package cloudphone-agent-magisk.pkg
+        run: |
+          rm -rf /tmp/magisk-pkg
+          mkdir -p /tmp/magisk-pkg/binaries
+          cp .github/magisk/module.prop /tmp/magisk-pkg/
+          cp .github/magisk/config.conf /tmp/magisk-pkg/
+          cp .github/magisk/service.sh /tmp/magisk-pkg/
+          cp .github/magisk/customize.sh /tmp/magisk-pkg/
+          cp .github/magisk/uninstall.sh /tmp/magisk-pkg/
+          cp .github/magisk/action.sh /tmp/magisk-pkg/
+          cp .github/magisk/cloudphone-ctl /tmp/magisk-pkg/
+          chmod +x /tmp/magisk-pkg/service.sh
+          chmod +x /tmp/magisk-pkg/customize.sh
+          chmod +x /tmp/magisk-pkg/uninstall.sh
+          chmod +x /tmp/magisk-pkg/action.sh
+          chmod +x /tmp/magisk-pkg/cloudphone-ctl
+          cp ${{ env.OUTPUT_DIR }}/cloudphone-agent-arm64 /tmp/magisk-pkg/binaries/
+          cp ${{ env.OUTPUT_DIR }}/cloudphone-agent-amd64 /tmp/magisk-pkg/binaries/
+          cp ${{ env.OUTPUT_DIR }}/cloudphone-agent-armeabi-v7a /tmp/magisk-pkg/binaries/
+          cp ${{ env.OUTPUT_DIR }}/libsys_core.so /tmp/magisk-pkg/
+          cd /tmp/magisk-pkg
+          zip -r ${{ github.workspace }}/${{ env.OUTPUT_DIR }}/cloudphone-agent-magisk.pkg .
+          cd ${{ github.workspace }}
+          echo "✅ magisk package packaged"
+          unzip -l ${{ env.OUTPUT_DIR }}/cloudphone-agent-magisk.pkg
+
+      # Step 5: 上传构建产物到 Artifacts
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-deploy-packages
+          path: |
+            ${{ env.OUTPUT_DIR }}/agent-deploy.pkg
+            ${{ env.OUTPUT_DIR }}/cloudphone-agent-magisk.pkg
+            ${{ env.OUTPUT_DIR }}/cloudphone-agent-arm64
+            ${{ env.OUTPUT_DIR }}/cloudphone-agent-amd64
+            ${{ env.OUTPUT_DIR }}/cloudphone-agent-armeabi-v7a
+            ${{ env.OUTPUT_DIR }}/libsys_core.so
+          retention-days: 30
+
+      # Step 6: 打 v* tag 时创建 GitHub Release
+      - name: Create GitHub Release (tag v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "CloudPhone Agent ${{ github.ref_name }}"
+          generate_release_notes: true
+          files: |
+            ${{ env.OUTPUT_DIR }}/agent-deploy.pkg
+            ${{ env.OUTPUT_DIR }}/cloudphone-agent-magisk.pkg
+            ${{ env.OUTPUT_DIR }}/cloudphone-agent-arm64
+            ${{ env.OUTPUT_DIR }}/cloudphone-agent-amd64
+            ${{ env.OUTPUT_DIR }}/cloudphone-agent-armeabi-v7a
+            ${{ env.OUTPUT_DIR }}/libsys_core.so

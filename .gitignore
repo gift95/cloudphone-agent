@@ -1,0 +1,39 @@
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+*.a
+*.o
+*.apk
+
+# Agent embed resource (built by CI, not committed)
+agent/libsys_core.so
+
+# Build outputs
+build/
+dist/
+assets/
+vendor/
+
+# Agent binaries (built by CI)
+cloudphone-agent-*
+*.pkg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Gradle (scrcpy-server)
+.gradle/
+local.properties
+
+# Logs
+*.log

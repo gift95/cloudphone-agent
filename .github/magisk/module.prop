@@ -1,0 +1,6 @@
+id=cloudphone-agent
+name=穿云投屏复刻版(CloudPhone Replica)
+version=v1.0.0
+versionCode=100
+author=CloudPhone Replica
+description=穿云投屏复刻版守护进程。配置/修改信令地址: 1. 终端执行 su -> cpctl 进入交互菜单修改并重启; 2. 或编辑 /data/adb/modules/cloudphone-agent/config.conf，修改后连点 2 次 Action 按钮生效。
