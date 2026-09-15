@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls"
 	"context"
 	"encoding/json"
 	"errors"
@@ -104,6 +105,8 @@ func customDialContext(ctx context.Context, network, addr string) (net.Conn, err
 var signalingDialer = websocket.Dialer{
 	NetDialContext:   customDialContext,
 	HandshakeTimeout: 15 * time.Second,
+	// 跳过 TLS 证书验证（支持自签名证书的私有部署）
+	TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 }
 
 // SignalingClient WebSocket 信令（阶段 2 实测协议）：
