@@ -20,12 +20,13 @@ import (
 	"github.com/pion/webrtc/v3"
 )
 
-// fallbackDNSServers 系统 DNS 异常时的备用公共 DNS 服务器
-var fallbackDNSServers = []string{
+// customDNSServers 固定使用的公共 DNS 服务器（按优先级顺序）
+var customDNSServers = []string{
 	"8.8.8.8:53",
-	"8.8.4.4:53",
 	"223.5.5.5:53",
+	"1.1.1.1:53",
 	"114.114.114.114:53",
+	"119.29.29.29:53",
 }
 
 // isDNSError 判断错误是否为 DNS 解析错误
@@ -51,64 +52,55 @@ func fallbackLookupHost(ctx context.Context, host string) ([]string, error) {
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
 			d := net.Dialer{Timeout: 5 * time.Second}
 			var lastErr error
-			for _, server := range fallbackDNSServers {
+			for _, server := range customDNSServers {
 				conn, err := d.DialContext(ctx, "udp", server)
 				if err == nil {
 					return conn, nil
 				}
 				lastErr = err
 			}
-			return nil, fmt.Errorf("all fallback DNS servers unreachable: %v", lastErr)
+			return nil, fmt.Errorf("all custom DNS servers unreachable: %v", lastErr)
 		},
 	}
 	return resolver.LookupHost(ctx, host)
 }
 
-// customDialContext 自定义拨号：先尝试系统 DNS，失败后使用备用 DNS 解析并直连 IP
+// customDialContext 固定使用自定义 DNS 解析域名后直连 IP（不使用系统 DNS）
 func customDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
 	d := net.Dialer{Timeout: 10 * time.Second}
 
-	conn, err := d.DialContext(ctx, network, addr)
-	if err == nil {
-		return conn, nil
-	}
-
-	if !isDNSError(err) {
-		return nil, err
-	}
-
 	host, port, splitErr := net.SplitHostPort(addr)
 	if splitErr != nil {
-		return nil, fmt.Errorf("split host port: %v (original dial error: %v)", splitErr, err)
+		return nil, fmt.Errorf("split host port: %v", splitErr)
 	}
 
+	// 如果已经是 IP 地址，直接连接
 	if net.ParseIP(host) != nil {
-		return nil, err
+		return d.DialContext(ctx, network, addr)
 	}
 
-	logf("[Signaling] system DNS failed for %q: %v, trying fallback DNS...", host, err)
-
+	// 固定使用自定义 DNS 解析域名
 	ips, lookupErr := fallbackLookupHost(ctx, host)
 	if lookupErr != nil {
-		return nil, fmt.Errorf("system DNS: %v, fallback DNS: %v", err, lookupErr)
+		return nil, fmt.Errorf("custom DNS lookup failed for %s: %v", host, lookupErr)
 	}
 
-	logf("[Signaling] fallback DNS resolved %s -> %v", host, ips)
+	logf("[Signaling] custom DNS resolved %s -> %v", host, ips)
 
 	var lastErr error
 	for _, ip := range ips {
 		ipAddr := net.JoinHostPort(ip, port)
 		conn, connErr := d.DialContext(ctx, network, ipAddr)
 		if connErr == nil {
-			logf("[Signaling] connected via fallback DNS to %s (%s)", host, ip)
+			logf("[Signaling] connected via custom DNS to %s (%s)", host, ip)
 			return conn, nil
 		}
 		lastErr = connErr
 	}
-	return nil, fmt.Errorf("all IPs unreachable after fallback DNS: %v", lastErr)
+	return nil, fmt.Errorf("all IPs unreachable after custom DNS resolution: %v", lastErr)
 }
 
-// signalingDialer 使用自定义 DNS fallback 的 WebSocket dialer
+// signalingDialer 使用固定自定义 DNS 的 WebSocket dialer
 var signalingDialer = websocket.Dialer{
 	NetDialContext:   customDialContext,
 	HandshakeTimeout: 15 * time.Second,
