@@ -139,7 +139,7 @@ func (s *SignalingClient) collectDeviceInfo() map[string]interface{} {
 		"android_serial":  getprop("ro.serialno", s.cfg.DeviceID),
 		"android_version": getprop("ro.build.version.release", "unknown"),
 		"android_sdk":     getprop("ro.build.version.sdk", "unknown"),
-		"app_version":     "0.3.6",
+		"app_version":     Version,
 		"is_webrtc":       true,
 		"displays": []map[string]interface{}{
 			{"x_res": w, "y_res": h, "width": w, "height": h},

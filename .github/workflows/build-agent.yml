@@ -84,19 +84,19 @@ jobs:
       - name: Build Agent (arm64)
         working-directory: agent
         run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o ../${{ env.OUTPUT_DIR }}/cloudphone-agent-arm64 .
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w -X main.Version=${GITHUB_REF_NAME}" -o ../${{ env.OUTPUT_DIR }}/cloudphone-agent-arm64 .
           echo "✅ arm64 build complete"
 
       - name: Build Agent (amd64)
         working-directory: agent
         run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o ../${{ env.OUTPUT_DIR }}/cloudphone-agent-amd64 .
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X main.Version=${GITHUB_REF_NAME}" -o ../${{ env.OUTPUT_DIR }}/cloudphone-agent-amd64 .
           echo "✅ amd64 build complete"
 
       - name: Build Agent (armeabi-v7a)
         working-directory: agent
         run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -ldflags="-s -w" -o ../${{ env.OUTPUT_DIR }}/cloudphone-agent-armeabi-v7a .
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -ldflags="-s -w -X main.Version=${GITHUB_REF_NAME}" -o ../${{ env.OUTPUT_DIR }}/cloudphone-agent-armeabi-v7a .
           echo "✅ armeabi-v7a build complete"
 
       # Step 3: 打包 agent-deploy.pkg
