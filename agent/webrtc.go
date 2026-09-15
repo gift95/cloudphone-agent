@@ -400,11 +400,59 @@ func (h *WebRTCHub) closeClient(id int) {
 	}
 }
 
+// parseICEServer 解析 ICE 服务器 URL，支持 turn:user:pass@host:port 格式
+// 标准 TURN URL (RFC 7065) 不包含 userinfo，用户名密码需通过 ICEServer.Username/Credential 单独设置
+func parseICEServer(raw string) webrtc.ICEServer {
+	server := webrtc.ICEServer{URLs: []string{raw}}
+
+	// 只处理 turn/turns 协议
+	if !strings.HasPrefix(raw, "turn:") && !strings.HasPrefix(raw, "turns:") {
+		return server
+	}
+
+	// 提取 scheme 和 rest
+	var scheme, rest string
+	if strings.HasPrefix(raw, "turns:") {
+		scheme = "turns:"
+		rest = raw[6:]
+	} else {
+		scheme = "turn:"
+		rest = raw[5:]
+	}
+
+	// 检查是否包含 @ (userinfo)
+	atIdx := strings.LastIndex(rest, "@")
+	if atIdx < 0 {
+		return server
+	}
+
+	userInfo := rest[:atIdx]
+	hostPart := rest[atIdx+1:]
+
+	// 解析 user:pass
+	colonIdx := strings.Index(userInfo, ":")
+	if colonIdx < 0 {
+		return server
+	}
+	username := userInfo[:colonIdx]
+	password := userInfo[colonIdx+1:]
+
+	// 清理后的 URL（去掉 userinfo）
+	cleanURL := scheme + hostPart
+	logf("[WebRTC] TURN server parsed: url=%s username=%s", cleanURL, username)
+
+	return webrtc.ICEServer{
+		URLs:       []string{cleanURL},
+		Username:   username,
+		Credential: password,
+	}
+}
+
 func (c *WebRTCClient) create(cfg *AgentConfig) error {
 	config := webrtc.Configuration{}
 	iceServers := cfg.iceServerList()
 	for _, s := range iceServers {
-		config.ICEServers = append(config.ICEServers, webrtc.ICEServer{URLs: []string{s}})
+		config.ICEServers = append(config.ICEServers, parseICEServer(s))
 	}
 	if len(config.ICEServers) == 0 {
 		config.ICEServers = []webrtc.ICEServer{{URLs: []string{"stun:stun.l.google.com:19302"}}}
