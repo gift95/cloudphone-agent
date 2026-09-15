@@ -1,4 +1,4 @@
-name: Build and Package Agent
+name: Build Agent and APK
 
 on:
   workflow_dispatch:
@@ -7,15 +7,12 @@ on:
         description: 'Create GitHub Release with artifacts'
         required: true
         default: 'false'
-      release_tag:
-        description: 'Release tag (e.g., v1.0.1)'
-        required: false
-        default: ''
   push:
     branches: [ main ]
     paths:
       - 'agent/**'
       - 'scrcpy-server/**'
+      - 'android/**'
       - '.github/workflows/build-agent.yml'
       - '.github/magisk/**'
       - 'deploy/**'
@@ -58,7 +55,9 @@ jobs:
         with:
           packages: "platforms;android-${{ env.ANDROID_COMPILE_SDK }} build-tools;${{ env.ANDROID_BUILD_TOOLS }}"
 
-      # Step 1: 构建 scrcpy-server (libsys_core.so)
+      # ============================================================
+      # Phase 1: Build scrcpy-server (libsys_core.so)
+      # ============================================================
       - name: Build scrcpy-server (libsys_core.so)
         working-directory: scrcpy-server/android
         env:
@@ -73,14 +72,14 @@ jobs:
             echo "ERROR: scrcpy-server not found!"
             exit 1
           fi
-          # 复制到 agent 目录（用于 //go:embed 编译）
           cp "$BUILD_DIR/scrcpy-server" ${{ github.workspace }}/agent/libsys_core.so
-          # 复制到输出目录
           mkdir -p ${{ github.workspace }}/${{ env.OUTPUT_DIR }}
           cp "$BUILD_DIR/scrcpy-server" ${{ github.workspace }}/${{ env.OUTPUT_DIR }}/libsys_core.so
-          echo "✅ scrcpy-server built, libsys_core.so ready for embed"
+          echo "✅ scrcpy-server built, libsys_core.so ready"
 
-      # Step 2: 编译 Agent（三个架构）
+      # ============================================================
+      # Phase 2: Build Agent binaries (3 architectures)
+      # ============================================================
       - name: Build Agent (arm64)
         working-directory: agent
         run: |
@@ -99,7 +98,78 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -ldflags="-s -w -X main.Version=${GITHUB_REF_NAME}" -o ../${{ env.OUTPUT_DIR }}/cloudphone-agent-armeabi-v7a .
           echo "✅ armeabi-v7a build complete"
 
-      # Step 3: 打包 agent-deploy.pkg
+      # ============================================================
+      # Phase 3: Copy agent binaries into APK assets
+      # ============================================================
+      - name: Prepare agent binaries for APK
+        run: |
+          echo "=== Copying agent binaries to APK assets ==="
+          mkdir -p android/app/src/main/assets/agent/arm64
+          mkdir -p android/app/src/main/assets/agent/armeabi-v7a
+          mkdir -p android/app/src/main/assets/agent/amd64
+
+          cp ${{ env.OUTPUT_DIR }}/cloudphone-agent-arm64 android/app/src/main/assets/agent/arm64/cloudphone-agent
+          cp ${{ env.OUTPUT_DIR }}/cloudphone-agent-armeabi-v7a android/app/src/main/assets/agent/armeabi-v7a/cloudphone-agent
+          cp ${{ env.OUTPUT_DIR }}/cloudphone-agent-amd64 android/app/src/main/assets/agent/amd64/cloudphone-agent
+          cp ${{ env.OUTPUT_DIR }}/libsys_core.so android/app/src/main/assets/libsys_core.so
+
+          echo "=== APK assets ==="
+          find android/app/src/main/assets -type f -exec ls -lh {} \;
+
+      # ============================================================
+      # Phase 4: Build APK (debug + release)
+      # ============================================================
+      - name: Cache Gradle packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/caches
+          key: ${{ runner.os }}-gradle-${{ hashFiles('android/**/*.gradle', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: ${{ runner.os }}-gradle-
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x android/gradlew
+
+      - name: Write signing config from secrets
+        working-directory: android
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            mkdir -p keystore
+            printf '%s' "$KEYSTORE_BASE64" | base64 -d > keystore/release.keystore
+            printf 'storeFile=keystore/release.keystore\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+              "$KEYSTORE_PASSWORD" "$KEY_ALIAS" "$KEY_PASSWORD" > keystore.properties
+            echo "::notice::release signing configured from secrets"
+          else
+            echo "::warning::KEYSTORE_BASE64 secret not configured, release will use debug signing"
+          fi
+
+      - name: Build debug & release APKs
+        working-directory: android
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            RELEASE_TAG="${GITHUB_REF#refs/tags/}"
+            VERSION_NAME="${RELEASE_TAG#v}"
+            VERSION_MAJOR=$(echo "$VERSION_NAME" | cut -d. -f1)
+            VERSION_MINOR=$(echo "$VERSION_NAME" | cut -d. -f2)
+            VERSION_PATCH=$(echo "$VERSION_NAME" | cut -d. -f3)
+            VERSION_CODE=$((VERSION_MAJOR * 10000 + VERSION_MINOR * 100 + VERSION_PATCH))
+            echo "Version: $VERSION_NAME (code $VERSION_CODE)"
+            ./gradlew assembleDebug assembleRelease --no-daemon \
+              -PversionName="$VERSION_NAME" \
+              -PversionCode="$VERSION_CODE"
+          else
+            ./gradlew assembleDebug assembleRelease --no-daemon
+          fi
+          echo "Generated APKs:"
+          find app/build/outputs/apk -name "*.apk" -exec ls -lh {} \;
+
+      # ============================================================
+      # Phase 5: Package agent-deploy.pkg + magisk.pkg
+      # ============================================================
       - name: Package agent-deploy.pkg
         working-directory: ${{ env.OUTPUT_DIR }}
         run: |
@@ -113,7 +183,6 @@ jobs:
           echo "✅ agent-deploy.pkg packaged"
           unzip -l agent-deploy.pkg
 
-      # Step 4: 打包 magisk 模块
       - name: Package cloudphone-agent-magisk.pkg
         run: |
           rm -rf /tmp/magisk-pkg
@@ -140,11 +209,13 @@ jobs:
           echo "✅ magisk package packaged"
           unzip -l ${{ env.OUTPUT_DIR }}/cloudphone-agent-magisk.pkg
 
-      # Step 5: 上传构建产物到 Artifacts
+      # ============================================================
+      # Phase 6: Upload all artifacts
+      # ============================================================
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: agent-deploy-packages
+          name: cloudphone-agent-release
           path: |
             ${{ env.OUTPUT_DIR }}/agent-deploy.pkg
             ${{ env.OUTPUT_DIR }}/cloudphone-agent-magisk.pkg
@@ -152,9 +223,13 @@ jobs:
             ${{ env.OUTPUT_DIR }}/cloudphone-agent-amd64
             ${{ env.OUTPUT_DIR }}/cloudphone-agent-armeabi-v7a
             ${{ env.OUTPUT_DIR }}/libsys_core.so
+            android/app/build/outputs/apk/debug/cloudphone-agent-*.apk
+            android/app/build/outputs/apk/release/cloudphone-agent-*.apk
           retention-days: 30
 
-      # Step 6: 打 v* tag 时创建 GitHub Release
+      # ============================================================
+      # Phase 7: Create GitHub Release (tag v*)
+      # ============================================================
       - name: Create GitHub Release (tag v*)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
@@ -168,38 +243,5 @@ jobs:
             ${{ env.OUTPUT_DIR }}/cloudphone-agent-amd64
             ${{ env.OUTPUT_DIR }}/cloudphone-agent-armeabi-v7a
             ${{ env.OUTPUT_DIR }}/libsys_core.so
-
-      - name: Trigger Android APK build
-        if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
-        run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          ANDROID_REPO="gift95/cloudphone-android"
-          echo "Triggering APK build for $ANDROID_REPO with tag $TAG..."
-
-          # Check if tag already exists in android repo
-          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-            -H "Authorization: token $GH_TOKEN" \
-            "https://api.github.com/repos/$ANDROID_REPO/git/ref/tags/$TAG")
-          if [ "$HTTP_CODE" = "200" ]; then
-            echo "Tag $TAG already exists in $ANDROID_REPO, skipping"
-            exit 0
-          fi
-
-          # Get latest commit SHA on main branch
-          SHA=$(curl -s \
-            -H "Authorization: token $GH_TOKEN" \
-            "https://api.github.com/repos/$ANDROID_REPO/git/ref/heads/main" \
-            | python3 -c "import sys,json; print(json.load(sys.stdin)['object']['sha'])")
-          echo "Target commit: $SHA"
-
-          # Create lightweight tag to trigger APK build workflow
-          curl -s -X POST \
-            -H "Authorization: token $GH_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "{\"ref\":\"refs/tags/$TAG\",\"sha\":\"$SHA\"}" \
-            "https://api.github.com/repos/$ANDROID_REPO/git/refs" \
-            | python3 -c "import sys,json; d=json.load(sys.stdin); print('Tag created:', d.get('ref','ERROR'))"
-
-          echo "APK build triggered for $ANDROID_REPO@$TAG"
+            android/app/build/outputs/apk/release/cloudphone-agent-*.apk
+            android/app/build/outputs/apk/debug/cloudphone-agent-*.apk

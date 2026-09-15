@@ -1,0 +1,26 @@
+*.iml
+.gradle/
+.idea/
+.kotlin/
+build/
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+# 发布签名（敏感，禁止入库）
+keystore/
+keystore.properties
+build_err.txt
+
+# Agent binaries (downloaded by CI from cloudphone-agent release)
+app/src/main/assets/agent/
+app/src/main/assets/cloudphone-agent-*
+app/src/main/assets/*.so
+
+# APK outputs
+*.apk
+app/build/
+
+# OS
+.DS_Store
+Thumbs.db

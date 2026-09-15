@@ -1,0 +1,83 @@
+plugins {
+    id 'com.android.application'
+}
+
+// 发布签名配置（keystore.properties 不入库，由 keystore.properties.example 提供模板）
+def keystoreProperties = new Properties()
+def keystorePropertiesFile = rootProject.file('keystore.properties')
+def hasReleaseSigning = keystorePropertiesFile.exists()
+if (hasReleaseSigning) {
+    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+}
+
+// 版本号配置：支持通过 CI 参数 -PversionName=xxx -PversionCode=xxx 动态设置
+// 例如：./gradlew assembleRelease -PversionName=1.0.3 -PversionCode=3
+def appVersionName = project.hasProperty('versionName') ? project.property('versionName') : "1.0.0"
+def appVersionCode = project.hasProperty('versionCode') ? project.property('versionCode').toInteger() : 1
+
+android {
+    namespace 'com.cloudphone.agent'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.cloudphone.agent"
+        minSdk 24
+        targetSdk 34
+        versionCode appVersionCode
+        versionName appVersionName
+    }
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            release {
+                storeFile rootProject.file(keystoreProperties['storeFile'])
+                storePassword keystoreProperties['storePassword']
+                keyAlias keystoreProperties['keyAlias']
+                keyPassword keystoreProperties['keyPassword']
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            // debug 版本使用 Android 默认 debug 签名，可直接安装
+            // applicationIdSuffix ".debug"  // 可选：与 release 共存时取消注释
+        }
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            } else {
+                // 未配置签名密钥时，release 也使用 debug 签名，确保可安装
+                println "WARNING: release signing not configured, using debug signing for installable APK"
+                signingConfig signingConfigs.debug
+            }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging true
+        }
+    }
+
+    // APK 文件名：cloudphone-agent-<buildType>-<版本号>.apk
+    applicationVariants.all { variant ->
+        variant.outputs.all {
+            outputFileName = "cloudphone-agent-${variant.buildType.name}-${variant.versionName}.apk"
+        }
+    }
+}
+
+dependencies {
+    // Shizuku API + Provider：免 root 以 shell 权限运行命令
+    // 注意：ShizukuProvider 类在 provider 构件中，仅依赖 api 会导致启动闪退
+    implementation 'dev.rikka.shizuku:api:13.1.5'
+    implementation 'dev.rikka.shizuku:provider:13.1.5'
+}
